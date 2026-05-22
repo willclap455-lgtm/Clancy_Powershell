@@ -85,11 +85,18 @@ function New-ParkingClient {
 
 	function Get-ClancyWindowsCredential {
 		param(
-			[string]$DefaultUserName = "Mobile.Clancy\Administrator"
+			[string]$DefaultUserName = "Mobile.Clancy\Administrator",
+
+			[switch]$AllowSkip,
+
+			[string]$SkipKeyword = "skip"
 		)
 
 		do {
 			Write-Host "`nEnter the Windows credentials for the Clancy servers." -ForegroundColor Blue
+			if ($AllowSkip) {
+				Write-Host "Type '$SkipKeyword' instead of a username to skip this remote step and record it in the summary." -ForegroundColor Yellow
+			}
 
 			$userNamePrompt = "Enter the domain-qualified username (domain\user or user@domain)"
 			if (-not [string]::IsNullOrWhiteSpace($DefaultUserName)) {
@@ -97,6 +104,12 @@ function New-ParkingClient {
 			}
 
 			$credentialUserName = Read-Host $userNamePrompt
+			if ($AllowSkip -and ($credentialUserName -ieq $SkipKeyword)) {
+				return [pscustomobject]@{
+					SkipCredentialRetry = $true
+				}
+			}
+
 			if ([string]::IsNullOrWhiteSpace($credentialUserName)) {
 				$credentialUserName = $DefaultUserName
 			}
@@ -145,11 +158,25 @@ function New-ParkingClient {
 
 		while ($true) {
 			try {
-				return & $ScriptBlock $Credential.Value
+				$result = & $ScriptBlock $Credential.Value
+				return [pscustomobject]@{
+					Status = "Success"
+					Result = $result
+					Details = $null
+				}
 			} catch {
 				if (Test-IsCredentialFailure -ErrorRecord $_) {
-					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please enter the domain-qualified username and password again, or press CTRL+C to stop this cmdlet." -ForegroundColor Red
-					$Credential.Value = Get-ClancyWindowsCredential -DefaultUserName $Credential.Value.UserName
+					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please enter the domain-qualified username and password again, or type 'skip' to continue and record this step in the summary." -ForegroundColor Red
+					$newCredential = Get-ClancyWindowsCredential -DefaultUserName $Credential.Value.UserName -AllowSkip
+					if ($newCredential.SkipCredentialRetry) {
+						return [pscustomobject]@{
+							Status = "Skipped"
+							Result = $null
+							Details = "$Activity was skipped after the Windows credentials were rejected."
+						}
+					}
+
+					$Credential.Value = $newCredential
 					continue
 				}
 
@@ -319,7 +346,7 @@ function New-ParkingClient {
 
 	Write-Host "`nAttempting to remote into DATASERVER ($ds_ip) and share the client folder ..." -ForegroundColor Yellow
 	
-	Invoke-WithCredentialRetry -Activity "Creating the DATASERVER SMB share" -Credential ([ref]$Credentials) -ScriptBlock {
+	$dataserverShareResult = Invoke-WithCredentialRetry -Activity "Creating the DATASERVER SMB share" -Credential ([ref]$Credentials) -ScriptBlock {
 		param($CurrentCredential)
 
 		Invoke-Command -ComputerName $dataserver_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
@@ -336,8 +363,13 @@ function New-ParkingClient {
 			}
 
 		} -ArgumentList $Name, $dataserver_path
-	} | Out-Null
-	Add-ClientSetupResult -Step "DATASERVER share" -Status "Success" -Details "Created SMB share $Name for $dataserver_path."
+	}
+	if ($dataserverShareResult.Status -eq "Skipped") {
+		Write-Host "DATASERVER share creation was skipped. Continuing with the remaining setup steps." -ForegroundColor Yellow
+		Add-ClientSetupResult -Step "DATASERVER share" -Status "Skipped" -Details $dataserverShareResult.Details
+	} else {
+		Add-ClientSetupResult -Step "DATASERVER share" -Status "Success" -Details "Created SMB share $Name for $dataserver_path."
+	}
 
 #####Now create the folders on MUS1 and MUS2 unloads, copy EmptyData into them, create the IIS-Site and Virtual Directory on both as well. 
 	Write-Host "`nAttempting to create unloads directories on P:\unloads and O:\unloads ...`n" -ForegroundColor Yellow
@@ -423,7 +455,7 @@ function New-ParkingClient {
 	try {
 #####Create the IIS-Sites and Virtual Directories on both unload servers
 		Write-Host "`nAttempting to create the IIS site and virtual directory on MUS1 ($mus1_ip) ..." -ForegroundColor Yellow
-		Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS1" -Credential ([ref]$Credentials) -ScriptBlock {
+		$mus1IisResult = Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS1" -Credential ([ref]$Credentials) -ScriptBlock {
 			param($CurrentCredential)
 
 			Invoke-Command -ComputerName $mus1_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
@@ -432,9 +464,14 @@ function New-ParkingClient {
 				New-WebVirtualDirectory -Site "Default Web Site" -Application $Name -Name "DemoTickets" -PhysicalPath $local_vpath -ErrorAction Stop | Out-Null
 
 			} -ArgumentList $Name, $local_unloads, $local_vpath
-		} | Out-Null
-		Write-Host "The IIS Site and Virtual Directory (DemoTickets) were created on MUS1 successfully." -ForegroundColor Green
-		Add-ClientSetupResult -Step "MUS1 IIS" -Status "Success" -Details "Created IIS application and DemoTickets virtual directory for $Name."
+		}
+		if ($mus1IisResult.Status -eq "Skipped") {
+			Write-Host "MUS1 IIS setup was skipped. Continuing with the remaining setup steps." -ForegroundColor Yellow
+			Add-ClientSetupResult -Step "MUS1 IIS" -Status "Skipped" -Details $mus1IisResult.Details
+		} else {
+			Write-Host "The IIS Site and Virtual Directory (DemoTickets) were created on MUS1 successfully." -ForegroundColor Green
+			Add-ClientSetupResult -Step "MUS1 IIS" -Status "Success" -Details "Created IIS application and DemoTickets virtual directory for $Name."
+		}
 	} catch {
 		Write-Host "`nFailed to create the IIS site for $Name on MUS1: $($_.Exception.Message)" -ForegroundColor Red
 		Add-ClientSetupResult -Step "MUS1 IIS" -Status "Failed" -Details $_.Exception.Message
@@ -442,7 +479,7 @@ function New-ParkingClient {
 
 	try {
 		Write-Host "`nAttempting to create the IIS site and virtual directory on MUS2 ($mus2_ip) ..." -ForegroundColor Yellow
-		Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
+		$mus2IisResult = Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
 			param($CurrentCredential)
 
 			Invoke-Command -ComputerName $mus2_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
@@ -451,9 +488,14 @@ function New-ParkingClient {
 				New-WebVirtualDirectory -Site "Default Web Site" -Application $Name -Name "DemoTickets" -PhysicalPath $local_vpath -ErrorAction Stop | Out-Null
 
 			} -ArgumentList $Name, $local_unloads, $local_vpath
-		} | Out-Null
-		Write-Host "The IIS Site and Virtual Directory (DemoTickets) were created on MUS2 successfully." -ForegroundColor Green
-		Add-ClientSetupResult -Step "MUS2 IIS" -Status "Success" -Details "Created IIS application and DemoTickets virtual directory for $Name."
+		}
+		if ($mus2IisResult.Status -eq "Skipped") {
+			Write-Host "MUS2 IIS setup was skipped. Continuing with the remaining setup steps." -ForegroundColor Yellow
+			Add-ClientSetupResult -Step "MUS2 IIS" -Status "Skipped" -Details $mus2IisResult.Details
+		} else {
+			Write-Host "The IIS Site and Virtual Directory (DemoTickets) were created on MUS2 successfully." -ForegroundColor Green
+			Add-ClientSetupResult -Step "MUS2 IIS" -Status "Success" -Details "Created IIS application and DemoTickets virtual directory for $Name."
+		}
 	} catch {
 		Write-Host "`nFailed to create the IIS site for $Name on MUS2: $($_.Exception.Message)" -ForegroundColor Red
 		Add-ClientSetupResult -Step "MUS2 IIS" -Status "Failed" -Details $_.Exception.Message
