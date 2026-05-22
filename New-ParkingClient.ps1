@@ -144,6 +144,16 @@ function New-ParkingClient {
 		return ($errorText -match "(?i)(access is denied|authentication|credential|credentials|unauthorized|logon failure|user name or password|password is incorrect|cannot be authenticated|401)")
 	}
 
+	function Test-IsCredentialRetrySkipped {
+		param(
+			[Parameter(Mandatory=$true)]
+			[object]$CredentialResult
+		)
+
+		$skipProperty = $CredentialResult.PSObject.Properties["SkipCredentialRetry"]
+		return (($null -ne $skipProperty) -and ($skipProperty.Value -eq $true))
+	}
+
 	function Invoke-WithCredentialRetry {
 		param(
 			[Parameter(Mandatory=$true)]
@@ -168,7 +178,7 @@ function New-ParkingClient {
 				if (Test-IsCredentialFailure -ErrorRecord $_) {
 					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please enter the domain-qualified username and password again, or type 'skip' to continue and record this step in the summary." -ForegroundColor Red
 					$newCredential = Get-ClancyWindowsCredential -DefaultUserName $Credential.Value.UserName -AllowSkip
-					if ($newCredential.SkipCredentialRetry) {
+					if (Test-IsCredentialRetrySkipped -CredentialResult $newCredential) {
 						return [pscustomobject]@{
 							Status = "Skipped"
 							Result = $null
