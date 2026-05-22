@@ -84,9 +84,29 @@ function New-ParkingClient {
 	}
 
 	function Get-ClancyWindowsCredential {
+		param(
+			[string]$DefaultUserName = "Mobile.Clancy\Administrator"
+		)
+
 		do {
 			Write-Host "`nEnter the Windows credentials for the Clancy servers." -ForegroundColor Blue
-			$credential = Get-Credential -UserName Mobile.Clancy\Administrator
+
+			$userNamePrompt = "Enter the domain-qualified username (domain\user or user@domain)"
+			if (-not [string]::IsNullOrWhiteSpace($DefaultUserName)) {
+				$userNamePrompt = "$userNamePrompt [$DefaultUserName]"
+			}
+
+			$credentialUserName = Read-Host $userNamePrompt
+			if ([string]::IsNullOrWhiteSpace($credentialUserName)) {
+				$credentialUserName = $DefaultUserName
+			}
+
+			if ([string]::IsNullOrWhiteSpace($credentialUserName)) {
+				Write-Host "A domain-qualified username is required. Please try again, or press CTRL+C to stop this cmdlet." -ForegroundColor Red
+				continue
+			}
+
+			$credential = Get-Credential -UserName $credentialUserName -Message "Enter the password for $credentialUserName"
 
 			if ($null -eq $credential) {
 				Write-Host "No credentials were entered. Please try again, or press CTRL+C to stop this cmdlet." -ForegroundColor Red
@@ -128,8 +148,8 @@ function New-ParkingClient {
 				return & $ScriptBlock $Credential.Value
 			} catch {
 				if (Test-IsCredentialFailure -ErrorRecord $_) {
-					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please try again, or press CTRL+C to stop this cmdlet." -ForegroundColor Red
-					$Credential.Value = Get-ClancyWindowsCredential
+					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please enter the domain-qualified username and password again, or press CTRL+C to stop this cmdlet." -ForegroundColor Red
+					$Credential.Value = Get-ClancyWindowsCredential -DefaultUserName $Credential.Value.UserName
 					continue
 				}
 
