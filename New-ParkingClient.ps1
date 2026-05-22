@@ -225,7 +225,7 @@ function New-ParkingClient {
 	Write-Host "State is 2 characters long." -ForegroundColor Green
 	Add-ClientSetupResult -Step "Input validation" -Status "Success" -Details "Client name, short name, and state were normalized."
 
-#####Anyone running this New-ParkingClient cmdlet should have the correct ClancySystems drive mappings on their workstation. Run "Repair-Mappings" cmdlet in this module. 
+#####Anyone running this New-ParkingClient cmdlet should have the correct ClancySystems drive mappings on their workstation. Run "Validate-Mappings" cmdlet in this module. 
 	$m_path = "M:\" + $Name
 	$y_path = "Y:\" + $Name
 	$e_path = "E:\" + $Name
