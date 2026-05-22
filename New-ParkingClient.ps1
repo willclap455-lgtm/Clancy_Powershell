@@ -278,11 +278,11 @@ function New-ParkingClient {
 	$e_path = "E:\" + $Name
 	$f_path = "F:\" + $Name
 	$p_path = "P:\unloads\" + $Name
-	$o_path = "O:\unloads\" + $Name
+	$o_path = "O:\" + $Name
 	$local_unloads = "C:\unloads\" + $Name
 	$local_vpath = "C:\unloads\" + $Name + "\comm\"
 	$p_vpath = "P:\unloads\" + $Name + "\comm\"
-	$o_vpath = "O:\unloads\" + $Name + "\comm\"
+	$o_vpath = "O:\" + $Name + "\comm\"
 	$the_drive = "" #the drive letter used to create the new client folder (m or y)
 	$local_drive = "" #the drive letter used local to dataserver (e or f)
 	$the_path = "" #the path that was taken, the full path here
@@ -372,7 +372,7 @@ function New-ParkingClient {
 	}
 
 #####Now create the folders on MUS1 and MUS2 unloads, copy EmptyData into them, create the IIS-Site and Virtual Directory on both as well. 
-	Write-Host "`nAttempting to create unloads directories on P:\unloads and O:\unloads ...`n" -ForegroundColor Yellow
+	Write-Host "`nAttempting to create unloads directories on P:\unloads and O: ...`n" -ForegroundColor Yellow
 	$pUnloadReady = $false
 	$oUnloadReady = $false
 	$pCommReady = $false
@@ -396,16 +396,16 @@ function New-ParkingClient {
 	try {
 		if (Test-Path -Path $o_path -PathType Container) {
 			Write-Host "$o_path already exists; continuing with the existing folder.`n" -ForegroundColor Yellow
-			Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Skipped" -Details "$o_path already existed."
+			Add-ClientSetupResult -Step "O: unloads folder" -Status "Skipped" -Details "$o_path already existed."
 		} else {
 			New-Item -Path $o_path -ItemType Directory -ErrorAction Stop | Out-Null
 			Write-Host "$o_path was successfully created.`n" -ForegroundColor Green
-			Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Success" -Details "Created $o_path."
+			Add-ClientSetupResult -Step "O: unloads folder" -Status "Success" -Details "Created $o_path."
 		}
 		$oUnloadReady = $true
 	} catch {
-		Write-Host "Error creating unloads folder on O:\unloads\ - $($_.Exception.Message)" -ForegroundColor Red
-		Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Failed" -Details $_.Exception.Message
+		Write-Host "Error creating unloads folder on O:\ - $($_.Exception.Message)" -ForegroundColor Red
+		Add-ClientSetupResult -Step "O: unloads folder" -Status "Failed" -Details $_.Exception.Message
 	}
 	
 #####Copy the EmptyData folder into the newly created folders...
@@ -425,15 +425,15 @@ function New-ParkingClient {
 
 	if ($oUnloadReady) {
 		try {
-			Copy-Item -Recurse O:\unloads\EmptyData\* $o_path -ErrorAction Stop
-			Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Success" -Details "Copied O:\unloads\EmptyData\* to $o_path."
-			Write-Host "Copied O:\unloads\EmptyData\* to $o_path." -ForegroundColor Green
+			Copy-Item -Recurse O:\EmptyData\* $o_path -ErrorAction Stop
+			Add-ClientSetupResult -Step "O: unloads seed files" -Status "Success" -Details "Copied O:\EmptyData\* to $o_path."
+			Write-Host "Copied O:\EmptyData\* to $o_path." -ForegroundColor Green
 		} catch {
-			Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Failed" -Details $_.Exception.Message
+			Add-ClientSetupResult -Step "O: unloads seed files" -Status "Failed" -Details $_.Exception.Message
 			Write-Host "Error copying EmptyData to $o_path - $($_.Exception.Message)" -ForegroundColor Red
 		}
 	} else {
-		Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Skipped" -Details "$o_path was not available."
+		Add-ClientSetupResult -Step "O: unloads seed files" -Status "Skipped" -Details "$o_path was not available."
 	}
 
 #####Make sure the comm's directory is present before you try to create the IIS-Sites 
@@ -445,11 +445,11 @@ function New-ParkingClient {
 		Add-ClientSetupResult -Step "P:\ comm folder" -Status "Success" -Details "$p_vpath exists."
 	}
 	if (-not (Test-Path -Path $o_vpath -PathType Container)) {
-		Write-Host "The directory 'O:\unloads\$Name\comm\' wasn't created. Continuing and recording the IIS/file work as needed." -ForegroundColor Red
-		Add-ClientSetupResult -Step "O:\ comm folder" -Status "Failed" -Details "$o_vpath was not found."
+		Write-Host "The directory 'O:\$Name\comm\' wasn't created. Continuing and recording the IIS/file work as needed." -ForegroundColor Red
+		Add-ClientSetupResult -Step "O: comm folder" -Status "Failed" -Details "$o_vpath was not found."
 	} else {
 		$oCommReady = $true
-		Add-ClientSetupResult -Step "O:\ comm folder" -Status "Success" -Details "$o_vpath exists."
+		Add-ClientSetupResult -Step "O: comm folder" -Status "Success" -Details "$o_vpath exists."
 	}
 
 	try {
@@ -646,17 +646,17 @@ function New-ParkingClient {
 #####Copy the modified custom.a, UNLOAD.ASP, LOOKUP.ASP, SENDDATA.BAT to the other unload server and custom.a, Menu.t the dataserver folder.
 	Write-Host "`nAttempting to copy the modified files to the other unload server and dataserver..." -ForegroundColor Yellow
 	
-	#copy the custom.a file to O:\client\comm\ and P:\client\comm\
-	Copy-ClientSetupFile -Source $customA -Destination $o_vpath -Step "Copy Custom.a to O:\ comm" | Out-Null
+	#copy the custom.a file to O:client\comm\ and P:\client\comm\
+	Copy-ClientSetupFile -Source $customA -Destination $o_vpath -Step "Copy Custom.a to O: comm" | Out-Null
 
-	#copy the sendDataFile to O:\client\comm\ and P:\client\comm\
-	Copy-ClientSetupFile -Source $sendDataFile -Destination $o_vpath -Step "Copy SENDDATA.BAT to O:\ comm" | Out-Null
+	#copy the sendDataFile to O:client\comm\ and P:\client\comm\
+	Copy-ClientSetupFile -Source $sendDataFile -Destination $o_vpath -Step "Copy SENDDATA.BAT to O: comm" | Out-Null
 
-	#copy the unloadfile to O:\ and P:\
-	Copy-ClientSetupFile -Source $unloadFile -Destination $o_path -Step "Copy Unload.asp to O:\ unloads" | Out-Null
+	#copy the unloadfile to O: and P:\
+	Copy-ClientSetupFile -Source $unloadFile -Destination $o_path -Step "Copy Unload.asp to O: unloads" | Out-Null
 
-	#copy the lookupfile to O:\ and P:\ 
-	Copy-ClientSetupFile -Source $lookupFile -Destination $o_path -Step "Copy LOOKUP.ASP to O:\ unloads" | Out-Null
+	#copy the lookupfile to O: and P:\ 
+	Copy-ClientSetupFile -Source $lookupFile -Destination $o_path -Step "Copy LOOKUP.ASP to O: unloads" | Out-Null
 
 	#copy custom.a and menu.t to the data folder on M or Y
 	Copy-ClientSetupFile -Source $customA -Destination $the_path -Step "Copy Custom.a to dataserver folder" | Out-Null
@@ -666,16 +666,16 @@ function New-ParkingClient {
 	if (Test-Path -Path $tp -PathType leaf) {
 		if (Select-String -Path $tp -Pattern $find -ErrorAction Stop) {
 			Write-Host "`nNew Parking Client $Name may not have totally been setup correctly. Check the configuration!" -ForegroundColor Red	
-			Add-ClientSetupResult -Step "O:\ LOOKUP.ASP verification" -Status "Failed" -Details "$tp still contains $find."
+			Add-ClientSetupResult -Step "O: LOOKUP.ASP verification" -Status "Failed" -Details "$tp still contains $find."
 		} else {
 			Write-Host "`nNew Clancy7 Parking Client $Name appears to be setup correctly!"	-ForegroundColor Green
-			Add-ClientSetupResult -Step "O:\ LOOKUP.ASP verification" -Status "Success" -Details "$tp contains $Name information."
+			Add-ClientSetupResult -Step "O: LOOKUP.ASP verification" -Status "Success" -Details "$tp contains $Name information."
 		}
 	} else {
-		Add-ClientSetupResult -Step "O:\ LOOKUP.ASP verification" -Status "Skipped" -Details "$tp was not found."
+		Add-ClientSetupResult -Step "O: LOOKUP.ASP verification" -Status "Skipped" -Details "$tp was not found."
 	}
 
-	Write-Host "`nAttempting to insert a new row into the Clientloc database on P:\ and O:\ ..."
+	Write-Host "`nAttempting to insert a new row into the Clientloc database on P:\ and O: ..."
 	$ps32Path = "$env:SystemRoot\SysWOW64\WindowsPowerShell\v1.0\powershell.exe"
 
 	$scriptPath = "$env:TEMP\AddClient32.ps1"
@@ -741,12 +741,12 @@ function New-ParkingClient {
 	}
 
 	Add-VFPTableRow -DbfPath 'P:\unloads\' -TableName 'Clientloc' -Values `$values
-	Add-VFPTableRow -DbfPath 'O:\unloads\' -TableName 'Clientloc' -Values `$values
+	Add-VFPTableRow -DbfPath 'O:\' -TableName 'Clientloc' -Values `$values
 "@
 	try {
 		Set-Content -Path $scriptPath -Value $scriptContent -Encoding UTF8 -ErrorAction Stop
 		Start-Process -FilePath $ps32Path -ArgumentList "-NoExit", "-File `"$scriptPath`"" -ErrorAction Stop
-		Add-ClientSetupResult -Step "Clientloc update script" -Status "Success" -Details "Started $scriptPath in 32-bit PowerShell for P:\ and O:\ Clientloc updates."
+		Add-ClientSetupResult -Step "Clientloc update script" -Status "Success" -Details "Started $scriptPath in 32-bit PowerShell for P:\ and O: Clientloc updates."
 	} catch {
 		Write-Host "Failed to start the Clientloc update script: $($_.Exception.Message)" -ForegroundColor Red
 		Add-ClientSetupResult -Step "Clientloc update script" -Status "Failed" -Details $_.Exception.Message
