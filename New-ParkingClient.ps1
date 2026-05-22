@@ -191,12 +191,15 @@ function New-ParkingClient {
 
 	#Get the IP addresses of the computers we'll need to remote into in case the name just doesn't want to work
 	Write-Host "`nObtaining IP Addresses of remote servers ..."
-	$ds_ip = (ping -4 -n 1 DATASERVER | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
-	$mus1_ip = (ping -4 -n 1 MUS1 | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
-	$mus2_ip = (ping -4 -n 1 MUS2 | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
-	Write-Host "DATASERVER: $ds_ip"
-	Write-Host "MUS1: $mus1_ip"
-	Write-Host "MUS2: $mus2_ip"
+	$dataserver_name = "DATASERVER"
+	$mus1_name = "MUS1"
+	$mus2_name = "MUS2"
+	$ds_ip = (ping -4 -n 1 $dataserver_name | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
+	$mus1_ip = (ping -4 -n 1 $mus1_name | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
+	$mus2_ip = (ping -4 -n 1 $mus2_name | Select-String -Pattern '\d{1,3}(\.\d{1,3}){3}' -AllMatches).Matches.Value[0]
+	Write-Host "$dataserver_name`: $ds_ip"
+	Write-Host "$mus1_name`: $mus1_ip"
+	Write-Host "$mus2_name`: $mus2_ip"
 
 	#What will the new client's information be
 	$Credentials = Get-ClancyWindowsCredential
@@ -299,7 +302,7 @@ function New-ParkingClient {
 	Invoke-WithCredentialRetry -Activity "Creating the DATASERVER SMB share" -Credential ([ref]$Credentials) -ScriptBlock {
 		param($CurrentCredential)
 
-		Invoke-Command -ComputerName "DATASERVER" -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+		Invoke-Command -ComputerName $dataserver_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
 			param($folderName, $folderPath)
 		
 			#Create the share using New-SMBShare ...
@@ -403,7 +406,7 @@ function New-ParkingClient {
 		Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS1" -Credential ([ref]$Credentials) -ScriptBlock {
 			param($CurrentCredential)
 
-			Invoke-Command -ComputerName "MUS1" -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+			Invoke-Command -ComputerName $mus1_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
 				param($Name, $local_unloads, $local_vpath)
 				New-WebApplication -Name $Name -Site "Default Web Site" -PhysicalPath $local_unloads -ApplicationPool "DefaultAppPool" -ErrorAction Stop | Out-Null
 				New-WebVirtualDirectory -Site "Default Web Site" -Application $Name -Name "DemoTickets" -PhysicalPath $local_vpath -ErrorAction Stop | Out-Null
@@ -422,7 +425,7 @@ function New-ParkingClient {
 		Invoke-WithCredentialRetry -Activity "Creating the IIS site on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
 			param($CurrentCredential)
 
-			Invoke-Command -ComputerName "MUS2" -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+			Invoke-Command -ComputerName $mus2_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
 				param($Name, $local_unloads, $local_vpath)
 				New-WebApplication -Name $Name -Site "Default Web Site" -PhysicalPath $local_unloads -ApplicationPool "DefaultAppPool" -ErrorAction Stop | Out-Null
 				New-WebVirtualDirectory -Site "Default Web Site" -Application $Name -Name "DemoTickets" -PhysicalPath $local_vpath -ErrorAction Stop | Out-Null
@@ -438,9 +441,9 @@ function New-ParkingClient {
 
 
 #####Modify custom.a, UNLOAD.ASP, LOOKUP.ASP, SENDDATA.BAT
-	$customA = $p_vpath + "\Custom.a"
-	$menuT = $p_vpath + "\menu.t"
-	$sendDataFile = $p_vpath + "\SENDDATA.BAT"
+	$customA = $p_vpath + "Custom.a"
+	$menuT = $p_vpath + "menu.t"
+	$sendDataFile = $p_vpath + "SENDDATA.BAT"
 	$unloadFile = $p_path + "\Unload.asp"
 	$lookupFile = $p_path + "\LOOKUP.ASP"
 
