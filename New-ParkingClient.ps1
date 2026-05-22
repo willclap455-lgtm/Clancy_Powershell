@@ -154,6 +154,23 @@ function New-ParkingClient {
 		return (($null -ne $skipProperty) -and ($skipProperty.Value -eq $true))
 	}
 
+	function Get-CredentialRetryDefaultUserName {
+		param(
+			[object]$CredentialResult,
+
+			[string]$FallbackUserName = "Mobile.Clancy\Administrator"
+		)
+
+		if (($null -ne $CredentialResult) -and -not (Test-IsCredentialRetrySkipped -CredentialResult $CredentialResult)) {
+			$userNameProperty = $CredentialResult.PSObject.Properties["UserName"]
+			if (($null -ne $userNameProperty) -and (-not [string]::IsNullOrWhiteSpace([string]$userNameProperty.Value))) {
+				return [string]$userNameProperty.Value
+			}
+		}
+
+		return $FallbackUserName
+	}
+
 	function Invoke-WithCredentialRetry {
 		param(
 			[Parameter(Mandatory=$true)]
@@ -166,9 +183,25 @@ function New-ParkingClient {
 			[ref]$Credential
 		)
 
+		$currentCredential = $Credential.Value
+
 		while ($true) {
+			if (($null -eq $currentCredential) -or (Test-IsCredentialRetrySkipped -CredentialResult $currentCredential)) {
+				$currentCredential = Get-ClancyWindowsCredential -DefaultUserName (Get-CredentialRetryDefaultUserName -CredentialResult $currentCredential) -AllowSkip
+				if (Test-IsCredentialRetrySkipped -CredentialResult $currentCredential) {
+					return [pscustomobject]@{
+						Status = "Skipped"
+						Result = $null
+						Details = "$Activity was skipped before credentials were entered for this step."
+					}
+				}
+
+				$Credential.Value = $currentCredential
+			}
+
 			try {
-				$result = & $ScriptBlock $Credential.Value
+				$result = & $ScriptBlock $currentCredential
+				$Credential.Value = $currentCredential
 				return [pscustomobject]@{
 					Status = "Success"
 					Result = $result
@@ -177,7 +210,7 @@ function New-ParkingClient {
 			} catch {
 				if (Test-IsCredentialFailure -ErrorRecord $_) {
 					Write-Host "`n$Activity failed because the Windows credentials were rejected. Please enter the domain-qualified username and password again, or type 'skip' to continue and record this step in the summary." -ForegroundColor Red
-					$newCredential = Get-ClancyWindowsCredential -DefaultUserName $Credential.Value.UserName -AllowSkip
+					$newCredential = Get-ClancyWindowsCredential -DefaultUserName (Get-CredentialRetryDefaultUserName -CredentialResult $currentCredential) -AllowSkip
 					if (Test-IsCredentialRetrySkipped -CredentialResult $newCredential) {
 						return [pscustomobject]@{
 							Status = "Skipped"
@@ -186,7 +219,8 @@ function New-ParkingClient {
 						}
 					}
 
-					$Credential.Value = $newCredential
+					$currentCredential = $newCredential
+					$Credential.Value = $currentCredential
 					continue
 				}
 
@@ -218,6 +252,65 @@ function New-ParkingClient {
 
 			Copy-Item -Path $Source -Destination $Destination -Force -Verbose -ErrorAction Stop
 			Add-ClientSetupResult -Step $Step -Status "Success" -Details "Copied $Source to $Destination."
+			Write-Host "$Step completed successfully." -ForegroundColor Green
+			return $true
+		} catch {
+			Add-ClientSetupResult -Step $Step -Status "Failed" -Details $_.Exception.Message
+			Write-Host "$Step failed: $($_.Exception.Message)" -ForegroundColor Red
+			return $false
+		}
+	}
+
+	function Copy-ClientSetupFileToRemote {
+		param(
+			[Parameter(Mandatory=$true)]
+			[string]$Source,
+
+			[Parameter(Mandatory=$true)]
+			[string]$Destination,
+
+			[Parameter(Mandatory=$true)]
+			[string]$ComputerName,
+
+			[Parameter(Mandatory=$true)]
+			[ref]$Credential,
+
+			[Parameter(Mandatory=$true)]
+			[string]$Step
+		)
+
+		try {
+			if (-not (Test-Path -Path $Source -PathType Leaf)) {
+				throw "Source file not found: $Source"
+			}
+
+			$copyResult = Invoke-WithCredentialRetry -Activity $Step -Credential $Credential -ScriptBlock {
+				param($CurrentCredential)
+
+				$session = $null
+				try {
+					$session = New-PSSession -ComputerName $ComputerName -Credential $CurrentCredential -ErrorAction Stop
+					Invoke-Command -Session $session -ErrorAction Stop -ScriptBlock {
+						param($Destination)
+						if (-not (Test-Path -Path $Destination -PathType Container)) {
+							throw "Destination folder not found: $Destination"
+						}
+					} -ArgumentList $Destination
+					Copy-Item -Path $Source -Destination $Destination -ToSession $session -Force -ErrorAction Stop
+				} finally {
+					if ($null -ne $session) {
+						Remove-PSSession -Session $session
+					}
+				}
+			}
+
+			if ($copyResult.Status -eq "Skipped") {
+				Add-ClientSetupResult -Step $Step -Status "Skipped" -Details $copyResult.Details
+				Write-Host "$Step was skipped." -ForegroundColor Yellow
+				return $false
+			}
+
+			Add-ClientSetupResult -Step $Step -Status "Success" -Details "Copied $Source to $Destination on $ComputerName."
 			Write-Host "$Step completed successfully." -ForegroundColor Green
 			return $true
 		} catch {
@@ -414,8 +507,35 @@ function New-ParkingClient {
 		}
 		$oUnloadReady = $true
 	} catch {
-		Write-Host "Error creating unloads folder on O:\unloads\ - $($_.Exception.Message)" -ForegroundColor Red
-		Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Failed" -Details $_.Exception.Message
+		$oFolderError = $_
+		Write-Host "Error creating unloads folder on O:\unloads\ - $($oFolderError.Exception.Message)" -ForegroundColor Red
+
+		Write-Host "Attempting to create the unloads folder directly on MUS2 with Windows credentials ..." -ForegroundColor Yellow
+		try {
+			$oFolderResult = Invoke-WithCredentialRetry -Activity "Creating the O:\ unloads folder on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
+				param($CurrentCredential)
+
+				Invoke-Command -ComputerName $mus2_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+					param($remoteClientPath)
+
+					if (Test-Path -Path $remoteClientPath -PathType Container) {
+						return "Exists"
+					}
+
+					New-Item -Path $remoteClientPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+					return "Created"
+				} -ArgumentList $local_unloads
+			}
+
+			if ($oFolderResult.Status -eq "Skipped") {
+				Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Skipped" -Details $oFolderResult.Details
+			} else {
+				$oUnloadReady = $true
+				Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Success" -Details "$($oFolderResult.Result) $local_unloads on MUS2 after O:\ access failed."
+			}
+		} catch {
+			Add-ClientSetupResult -Step "O:\ unloads folder" -Status "Failed" -Details "O:\ access failed: $($oFolderError.Exception.Message) Remote MUS2 attempt failed: $($_.Exception.Message)"
+		}
 	}
 	
 #####Copy the EmptyData folder into the newly created folders...
@@ -439,8 +559,37 @@ function New-ParkingClient {
 			Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Success" -Details "Copied O:\unloads\EmptyData\* to $o_path."
 			Write-Host "Copied O:\unloads\EmptyData\* to $o_path." -ForegroundColor Green
 		} catch {
-			Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Failed" -Details $_.Exception.Message
-			Write-Host "Error copying EmptyData to $o_path - $($_.Exception.Message)" -ForegroundColor Red
+			$oSeedError = $_
+			Write-Host "Error copying EmptyData to $o_path - $($oSeedError.Exception.Message)" -ForegroundColor Red
+
+			Write-Host "Attempting to copy EmptyData directly on MUS2 with Windows credentials ..." -ForegroundColor Yellow
+			try {
+				$oSeedResult = Invoke-WithCredentialRetry -Activity "Copying EmptyData to O:\ unloads on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
+					param($CurrentCredential)
+
+					Invoke-Command -ComputerName $mus2_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+						param($remoteEmptyDataPath, $remoteClientPath)
+
+						if (-not (Test-Path -Path $remoteEmptyDataPath -PathType Container)) {
+							throw "Remote seed folder not found: $remoteEmptyDataPath"
+						}
+
+						if (-not (Test-Path -Path $remoteClientPath -PathType Container)) {
+							New-Item -Path $remoteClientPath -ItemType Directory -Force -ErrorAction Stop | Out-Null
+						}
+
+						Copy-Item -Path (Join-Path $remoteEmptyDataPath "*") -Destination $remoteClientPath -Recurse -Force -ErrorAction Stop
+					} -ArgumentList "C:\unloads\EmptyData", $local_unloads
+				}
+
+				if ($oSeedResult.Status -eq "Skipped") {
+					Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Skipped" -Details $oSeedResult.Details
+				} else {
+					Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Success" -Details "Copied C:\unloads\EmptyData\* to $local_unloads on MUS2 after O:\ access failed."
+				}
+			} catch {
+				Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Failed" -Details "O:\ access failed: $($oSeedError.Exception.Message) Remote MUS2 attempt failed: $($_.Exception.Message)"
+			}
 		}
 	} else {
 		Add-ClientSetupResult -Step "O:\ unloads seed files" -Status "Skipped" -Details "$o_path was not available."
@@ -455,8 +604,30 @@ function New-ParkingClient {
 		Add-ClientSetupResult -Step "P:\ comm folder" -Status "Success" -Details "$p_vpath exists."
 	}
 	if (-not (Test-Path -Path $o_vpath -PathType Container)) {
-		Write-Host "The directory 'O:\unloads\$Name\comm\' wasn't created. Continuing and recording the IIS/file work as needed." -ForegroundColor Red
-		Add-ClientSetupResult -Step "O:\ comm folder" -Status "Failed" -Details "$o_vpath was not found."
+		Write-Host "The directory 'O:\unloads\$Name\comm\' wasn't found through the mapped drive. Checking MUS2 directly ..." -ForegroundColor Yellow
+		try {
+			$oCommResult = Invoke-WithCredentialRetry -Activity "Checking the O:\ comm folder on MUS2" -Credential ([ref]$Credentials) -ScriptBlock {
+				param($CurrentCredential)
+
+				Invoke-Command -ComputerName $mus2_name -Credential $CurrentCredential -ErrorAction Stop -ScriptBlock {
+					param($remoteCommPath)
+					return (Test-Path -Path $remoteCommPath -PathType Container)
+				} -ArgumentList $local_vpath
+			}
+
+			if ($oCommResult.Status -eq "Skipped") {
+				Add-ClientSetupResult -Step "O:\ comm folder" -Status "Skipped" -Details $oCommResult.Details
+			} elseif ($oCommResult.Result -eq $true) {
+				$oCommReady = $true
+				Add-ClientSetupResult -Step "O:\ comm folder" -Status "Success" -Details "$local_vpath exists on MUS2."
+			} else {
+				Write-Host "The directory 'O:\unloads\$Name\comm\' wasn't created. Continuing and recording the IIS/file work as needed." -ForegroundColor Red
+				Add-ClientSetupResult -Step "O:\ comm folder" -Status "Failed" -Details "$o_vpath was not found."
+			}
+		} catch {
+			Write-Host "The directory 'O:\unloads\$Name\comm\' wasn't created. Continuing and recording the IIS/file work as needed." -ForegroundColor Red
+			Add-ClientSetupResult -Step "O:\ comm folder" -Status "Failed" -Details $_.Exception.Message
+		}
 	} else {
 		$oCommReady = $true
 		Add-ClientSetupResult -Step "O:\ comm folder" -Status "Success" -Details "$o_vpath exists."
@@ -657,16 +828,24 @@ function New-ParkingClient {
 	Write-Host "`nAttempting to copy the modified files to the other unload server and dataserver..." -ForegroundColor Yellow
 	
 	#copy the custom.a file to O:\client\comm\ and P:\client\comm\
-	Copy-ClientSetupFile -Source $customA -Destination $o_vpath -Step "Copy Custom.a to O:\ comm" | Out-Null
+	if (-not (Copy-ClientSetupFile -Source $customA -Destination $o_vpath -Step "Copy Custom.a to O:\ comm")) {
+		Copy-ClientSetupFileToRemote -Source $customA -Destination $local_vpath -ComputerName $mus2_name -Credential ([ref]$Credentials) -Step "Copy Custom.a to O:\ comm via MUS2 remote" | Out-Null
+	}
 
 	#copy the sendDataFile to O:\client\comm\ and P:\client\comm\
-	Copy-ClientSetupFile -Source $sendDataFile -Destination $o_vpath -Step "Copy SENDDATA.BAT to O:\ comm" | Out-Null
+	if (-not (Copy-ClientSetupFile -Source $sendDataFile -Destination $o_vpath -Step "Copy SENDDATA.BAT to O:\ comm")) {
+		Copy-ClientSetupFileToRemote -Source $sendDataFile -Destination $local_vpath -ComputerName $mus2_name -Credential ([ref]$Credentials) -Step "Copy SENDDATA.BAT to O:\ comm via MUS2 remote" | Out-Null
+	}
 
 	#copy the unloadfile to O:\ and P:\
-	Copy-ClientSetupFile -Source $unloadFile -Destination $o_path -Step "Copy Unload.asp to O:\ unloads" | Out-Null
+	if (-not (Copy-ClientSetupFile -Source $unloadFile -Destination $o_path -Step "Copy Unload.asp to O:\ unloads")) {
+		Copy-ClientSetupFileToRemote -Source $unloadFile -Destination $local_unloads -ComputerName $mus2_name -Credential ([ref]$Credentials) -Step "Copy Unload.asp to O:\ unloads via MUS2 remote" | Out-Null
+	}
 
 	#copy the lookupfile to O:\ and P:\ 
-	Copy-ClientSetupFile -Source $lookupFile -Destination $o_path -Step "Copy LOOKUP.ASP to O:\ unloads" | Out-Null
+	if (-not (Copy-ClientSetupFile -Source $lookupFile -Destination $o_path -Step "Copy LOOKUP.ASP to O:\ unloads")) {
+		Copy-ClientSetupFileToRemote -Source $lookupFile -Destination $local_unloads -ComputerName $mus2_name -Credential ([ref]$Credentials) -Step "Copy LOOKUP.ASP to O:\ unloads via MUS2 remote" | Out-Null
+	}
 
 	#copy custom.a and menu.t to the data folder on M or Y
 	Copy-ClientSetupFile -Source $customA -Destination $the_path -Step "Copy Custom.a to dataserver folder" | Out-Null
